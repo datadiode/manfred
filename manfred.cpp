@@ -29,7 +29,7 @@ SOFTWARE.
 #include "miscutil.h"
 
 static const char usage[] =
-	"Manifest Resource Editor v1.0\r\n"
+	"Manifest Resource Editor v1.01\r\n"
 	"\r\n"
 	"Usage:\r\n"
 	"\r\n"
@@ -37,7 +37,9 @@ static const char usage[] =
 	"\r\n"
 	"<target>  may be followed by a list of subfolders to search\r\n"
 	"/once     causes update of manifest to occur only when no file tags exist yet\r\n"
+	"/never    causes update of manifest to occur never; useful with /rgs option\r\n"
 	"/ini      specifies an ini file from which to merge content into the manifest\r\n"
+	"/rgs      specifies an rgs file to write results to for bulk registration\r\n"
 	"/files    specifies file inclusion patterns; may occur repeatedly\r\n"
 	"/minus    specifies file exclusion patterns; may occur only once\r\n"
 	"\r\n";
@@ -51,7 +53,7 @@ static const GUID CLSID_Registrar =
 static LPCWSTR PathEatPrefix(LPCWSTR path, LPCWSTR root)
 {
 	int prefix = PathCommonPrefixW(path, root, NULL);
-	return path[prefix] > root[prefix] ? path + prefix + 1 : NULL;
+	return prefix && path[prefix] > root[prefix] ? path + prefix + 1 : NULL;
 }
 
 static HRESULT CoGetError(DWORD dw = GetLastError())
@@ -87,6 +89,13 @@ STDAPI DllGetClassObject(REFCLSID rclsid, REFIID riid, LPVOID *ppv)
 	}
 	return CLASS_E_CLASSNOTAVAILABLE;
 }
+
+union ValueBuffer
+{
+	BYTE b[1024];
+	WCHAR s[1];
+	DWORD d;
+};
 
 class Appartment
 {
@@ -138,9 +147,10 @@ class Application
 	LANGID ManifestLang;
 	HANDLE update;
 	LPCWSTR appname;
-	bool once;
+	enum { always, once, never } option;
 	LPWSTR target;
 	LPWSTR ini;
+	LPWSTR rgs;
 	LPWSTR files;
 	UINT minus;
 	Writer writer;
@@ -238,31 +248,25 @@ class Application
 			{
 				writer.write("\t\t<comClass clsid=\"%ls\"", id);
 				WCHAR data[MAX_PATH];
-				DWORD cb = sizeof data;
+				BufferCapacity<sizeof data> cb;
 				if (0 == SHRegGetValueW(hKey2, L"InprocServer32", L"ThreadingModel", SRRF_RT_REG_SZ, NULL, data, &cb))
 					writer.write(" threadingModel=\"%ls\"", data);
 				HKEY hKey3;
 				if (0 == RegOpenKeyW(hKey2, L"MiscStatus", &hKey3))
 				{
-					cb = sizeof data;
 					if (0 == SHRegGetValueW(hKey3, NULL, NULL, SRRF_RT_REG_SZ, NULL, data, &cb))
 						WriteMistStatus(" miscStatus=\"", data);
-					cb = sizeof data;
 					if (0 == SHRegGetValueW(hKey3, L"1", NULL, SRRF_RT_REG_SZ, NULL, data, &cb))
 						WriteMistStatus(" miscStatusContent=\"", data);
-					cb = sizeof data;
 					if (0 == SHRegGetValueW(hKey3, L"2", NULL, SRRF_RT_REG_SZ, NULL, data, &cb))
 						WriteMistStatus(" miscStatusThumbnail=\"", data);
-					cb = sizeof data;
 					if (0 == SHRegGetValueW(hKey3, L"4", NULL, SRRF_RT_REG_SZ, NULL, data, &cb))
 						WriteMistStatus(" miscStatusIcon=\"", data);
-					cb = sizeof data;
 					if (0 == SHRegGetValueW(hKey3, L"8", NULL, SRRF_RT_REG_SZ, NULL, data, &cb))
 						WriteMistStatus(" miscStatusDocPrint=\"", data);
 					RegCloseKey(hKey3);
 				}
 				writer.write(" />\r\n");
-				cb = sizeof data;
 				if (0 == SHRegGetValueW(hKey2, L"TypeLib", NULL, SRRF_RT_REG_SZ, NULL, data, &cb))
 				{
 					PathCombineW(subkey, appkey, L"Software\\Classes\\TypeLib");
@@ -345,7 +349,7 @@ class Application
 							static const char tag[] = "</assembly>";
 							q = MemSearch(p, cb, tag, sizeof tag - 1);
 						}
-						else if (once)
+						else if (option == once)
 						{
 							q = NULL;
 						}
@@ -388,7 +392,7 @@ class Application
 		return hr;
 	}
 
-	HRESULT AddFileToManifest(LPCWSTR path, LPCWSTR name)
+	HRESULT DllRegisterServer(LPCWSTR path)
 	{
 		HRESULT hr = S_FALSE;
 		if (HMODULE module = LoadLibraryW(path))
@@ -407,16 +411,16 @@ class Application
 		{
 			hr = CoGetError();
 		}
-
-		if (hr == S_OK)
-		{
-			writer.write("\t<file name=\"%ls\">\r\n", name);
-			ExportCls();
-			ExportTlb();
-			writer.write("\t</file>\r\n");
-		}
-
 		return hr;
+	}
+
+	HRESULT AddFileToManifest(LPCWSTR name)
+	{
+		writer.write("\t<file name=\"%ls\">\r\n", name);
+		ExportCls();
+		ExportTlb();
+		writer.write("\t</file>\r\n");
+		return S_OK;
 	}
 
 	HRESULT ManualAddFileToManifest(LPCWSTR name)
@@ -507,9 +511,13 @@ class Application
 						HRESULT hr = E_UNEXPECTED;
 						if (LPCWSTR name = PathEatPrefix(path, root))
 						{
-							hr = ManualAddFileToManifest(name);
-							if (hr == S_FALSE)
-								hr = AddFileToManifest(path, name);
+							hr = DllRegisterServer(path);
+							if (hr == S_OK && option != never)
+							{
+								hr = ManualAddFileToManifest(name);
+								if (hr == S_FALSE)
+									hr = AddFileToManifest(name);
+							}
 						}
 						WriteTo<STD_OUTPUT_HANDLE>("[%08lX] %ls\r\n", hr, name);
 					}
@@ -530,12 +538,17 @@ class Application
 			*folder++ = L'\0';
 		WCHAR full[MAX_PATH];
 		GetFullPathNameW(target, _countof(full), full, NULL);
-		HRESULT hr = BeginManifest(full);
+		HRESULT hr = S_OK;
+		if (option != never)
+			hr = BeginManifest(full);
 		if (hr == S_OK)
 		{
 			LPCWSTR name = PathFindFileNameW(full);
-			HRESULT hr = ManualAddFileToManifest(name);
-			WriteTo<STD_OUTPUT_HANDLE>("[%08lX] %ls\r\n", hr, name);
+			if (option != never)
+			{
+				hr = ManualAddFileToManifest(name);
+				WriteTo<STD_OUTPUT_HANDLE>("[%08lX] %ls\r\n", hr, name);
+			}
 			PathRemoveFileSpecW(full);
 			SetDllDirectoryW(full);
 			do
@@ -546,9 +559,115 @@ class Application
 				UpdateFiles(full, folder);
 				folder = separator ? separator + 1 : NULL;
 			} while(folder);
-			EndManifest();
+			if (option != never)
+				hr = EndManifest();
 		}
 		return hr;
+	}
+
+	static HRESULT MayForceRemove(HKEY key, LPCWSTR name)
+	{
+		if (PathMatchSpecW(name, L"{*}"))
+			return S_OK;
+		if (key != HKEY_CLASSES_ROOT)
+			return S_FALSE;
+		CLSID clsid;
+		return CLSIDFromProgID(name, &clsid);
+	}
+
+	LPCWSTR PathEatTargetFolder(LPCWSTR path) const
+	{
+		WCHAR full[MAX_PATH];
+		LPWSTR name = NULL;
+		GetFullPathNameW(target, _countof(full), full, &name);
+		name = name > full ? name - 1 : full;
+		*name = L'\0';
+		return PathEatPrefix(path, full);
+	}
+
+	HRESULT WriteValue(DWORD type, DWORD cb, const ValueBuffer &vb)
+	{
+		HRESULT hr = S_OK;
+		switch (type)
+		{
+		case REG_SZ:
+			if (LPCWSTR name = PathEatTargetFolder(vb.s))
+				hr = writer.write(" = s '%%ROOT%%%ls'", name);
+			else
+				hr = writer.write(" = s '%ls'", vb.s);
+			break;
+		case REG_DWORD:
+			hr = writer.write(" = d '%lu'", vb.d);
+			break;
+		}
+		return hr;
+	}
+
+	HRESULT WriteValue(HKEY key, LPCWSTR name)
+	{
+		HRESULT hr = S_OK;
+		DWORD type = 0;
+		ValueBuffer vb;
+		BufferCapacity<sizeof vb> cb;
+		if (0 == RegQueryValueExW(key, name, NULL, &type, vb.b, &cb))
+		{
+			hr = WriteValue(type, cb, vb);
+		}
+		return hr;
+	}
+
+	HRESULT WriteScript(HKEY outerkey, LPCWSTR outername, int depth = 0, LPCSTR format = "%ls")
+	{
+		static const char tabs[] = "\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t";
+		if (depth > sizeof tabs - 1)
+			depth = sizeof tabs - 1;
+		writer.write(depth, tabs);
+		writer.write(format, outername);
+		WriteValue(outerkey, NULL);
+		writer.write("\r\n");
+		writer.write(depth, tabs);
+		writer.write("{\r\n");
+		DWORD i = 0;
+		HKEY key;
+		WCHAR name[MAX_PATH];
+		while (0 == RegEnumKeyW(outerkey, i++, name, _countof(name)) && 0 == RegOpenKeyW(outerkey, name, &key))
+		{
+			HRESULT hr = MayForceRemove(outerkey, name);
+			WriteScript(key, name, depth + 1,
+				hr == S_FALSE ? "'%ls'" : hr == S_OK ? "ForceRemove '%ls'" : "NoRemove '%ls'");
+			RegCloseKey(key);
+		}
+		DWORD type = 0;
+		ValueBuffer vb;
+		BufferCapacity<sizeof vb> cb;
+		BufferCapacity<_countof(name)> namelen;
+		i = 0;
+		while (0 == RegEnumValueW(outerkey, i++, name, &namelen, NULL, &type, vb.b, &cb))
+		{
+			if (namelen == 0 || lstrcmpW(name, L"ManfredWasHere") == 0)
+				continue;
+			writer.write(depth + 1, tabs);
+			writer.write("val '%ls'", name);
+			WriteValue(type, cb, vb);
+			writer.write("\r\n");
+		}
+		writer.write(depth, tabs);
+		writer.write("}\r\n");
+		return S_OK;
+	}
+
+	HRESULT WriteScript()
+	{
+		writer.setTabWidth(0);
+		HRESULT hr = SHCreateStreamOnFileEx(rgs,
+			STGM_CREATE | STGM_WRITE | STGM_SHARE_DENY_WRITE,
+			FILE_ATTRIBUTE_NORMAL, FALSE, NULL, &writer);
+		if (SUCCEEDED(hr))
+		{
+			WriteScript(HKEY_CLASSES_ROOT, L"HKCR");
+			writer.close();
+		}
+		return S_OK;
 	}
 
 public:
@@ -573,26 +692,26 @@ public:
 			}
 			else if (*p != L'/')
 			{
-				if (int len = lstrlenW(p))
+				if (const LPWSTR arg = *parg)
 				{
-					if (LPWSTR arg = *parg)
+					if (sep == '\0')
+						break;
+					const int len = lstrlenW(p);
+					const int cur = lstrlenW(arg);
+					arg[cur] = sep;
+					lstrcpyW(arg + cur + 1, p);
+					if (minus != 0)
 					{
-						int cur = lstrlenW(arg);
-						arg[cur] = sep;
-						lstrcpyW(arg + cur + 1, p);
-						if (minus != 0)
-						{
-							MemReverse(arg, cur);
-							MemReverse(arg + cur + 1, len);
-							MemReverse(arg, cur + 1 + len);
-						}
+						MemReverse(arg, cur);
+						MemReverse(arg + cur + 1, len);
+						MemReverse(arg, cur + 1 + len);
 					}
-					else
-					{
-						*parg = p;
-					}
+					sep = L';';
 				}
-				sep = L';';
+				else
+				{
+					*parg = p;
+				}
 			}
 			else if (lstrcmpiW(p + 1, L"files") == 0)
 			{
@@ -601,21 +720,32 @@ public:
 			}
 			else if (lstrcmpiW(p + 1, L"minus") == 0)
 			{
+				if (parg != &files)
+					break;
 				sep = L'|';
 				minus = lstrlenW(files);
 			}
 			else if (lstrcmpiW(p + 1, L"ini") == 0)
 			{
+				sep = L'\0';
 				parg = &ini;
 			}
+			else if (lstrcmpiW(p + 1, L"rgs") == 0)
+			{
+				sep = L'\0';
+				parg = &rgs;
+			}
 			else if (lstrcmpiW(p + 1, L"once") == 0)
-				once = true;
+				option = once;
+			else if (lstrcmpiW(p + 1, L"never") == 0)
+				option = never;
 			else
-				parg = NULL;
+				break;
 			p = q + StrSpnW(q, L" \t\r\n");
-		} while (*p != L'\0' && parg != NULL);
+		} while (*p != L'\0');
 
-		if (target == NULL || parg == NULL)
+		// If no target was specified, or unconsumed arguments exist, give up.
+		if (target == NULL || *p != L'\0')
 		{
 			WriteTo<STD_OUTPUT_HANDLE>(usage, appname);
 			return E_FAIL;
@@ -627,8 +757,13 @@ public:
 		Appartment appartment;
 		HRESULT hr = appartment.GetHResult();
 		if (SUCCEEDED(hr))
+		{
 			hr = UpdateFiles();
-
+			if (hr == S_OK && rgs != NULL)
+			{
+				hr = WriteScript();
+			}
+		}
 		return hr;
 	}
 };

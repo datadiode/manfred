@@ -53,3 +53,12 @@ void MemReverse(T *p, size_t pLen)
 		*p++ = tmp;
 	}
 }
+
+template<DWORD size>
+class BufferCapacity
+{
+	DWORD dw;
+public:
+	operator DWORD() { return dw; }
+	DWORD *operator&() { dw = size; return &dw; }
+};
