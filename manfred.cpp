@@ -29,7 +29,7 @@ SOFTWARE.
 #include "miscutil.h"
 
 static const char usage[] =
-	"Manifest Resource Editor v1.01\r\n"
+	"Manifest Resource Editor v1.02\r\n"
 	"\r\n"
 	"Usage:\r\n"
 	"\r\n"
@@ -90,11 +90,20 @@ STDAPI DllGetClassObject(REFCLSID rclsid, REFIID riid, LPVOID *ppv)
 	return CLASS_E_CLASSNOTAVAILABLE;
 }
 
-union ValueBuffer
+class ValueBuffer
 {
-	BYTE b[1024];
-	WCHAR s[1];
-	DWORD d;
+	// Registrar tokens are limited to 4096 characters, which in case of
+	// string values may expand to 8194 bytes including null termination.
+	static const DWORD size = 8200; // a few bytes more than required
+public:
+	DWORD type;
+	BufferCapacity<size> cb;
+	union
+	{
+		BYTE b[size];
+		WCHAR s[size / sizeof(WCHAR)];
+		DWORD d;
+	};
 };
 
 class Appartment
@@ -154,6 +163,8 @@ class Application
 	LPWSTR files;
 	UINT minus;
 	Writer writer;
+	ValueBuffer vb;
+	WCHAR root[MAX_PATH];
 
 	static DWORD ManfredWasHere(HKEY hKey, DWORD dwNewState)
 	{
@@ -323,7 +334,7 @@ class Application
 		return FALSE;
 	}
 
-	HRESULT BeginManifest(HMODULE module = NULL)
+	HRESULT BeginManifest(HMODULE module)
 	{
 		HRESULT hr = S_FALSE;
 		EnumResourceNamesW(module, RT_MANIFEST, EnumResNameProcW, reinterpret_cast<LONG_PTR>(this));
@@ -377,17 +388,17 @@ class Application
 		return hr;
 	}
 
-	HRESULT BeginManifest(LPCWSTR path)
+	HRESULT BeginManifest()
 	{
 		HRESULT hr = S_FALSE;
-		if (HMODULE module = LoadLibraryExW(path, NULL, LOAD_LIBRARY_AS_DATAFILE))
+		if (HMODULE module = LoadLibraryExW(root, NULL, LOAD_LIBRARY_AS_DATAFILE))
 		{
 			hr = BeginManifest(module);
 			FreeLibrary(module);
 			if (hr == S_FALSE)
-				hr = BeginManifest();
+				hr = BeginManifest(NULL);
 			if (hr == S_OK)
-				update = BeginUpdateResourceW(path, FALSE);
+				update = BeginUpdateResourceW(root, FALSE);
 		}
 		return hr;
 	}
@@ -475,7 +486,7 @@ class Application
 		return S_OK;
 	}
 
-	void UpdateFiles(LPCWSTR root, LPCWSTR folder)
+	void UpdateFiles(LPCWSTR folder)
 	{
 		WCHAR path[MAX_PATH];
 
@@ -536,27 +547,25 @@ class Application
 		LPWSTR folder = StrChrW(target, L';');
 		if (folder)
 			*folder++ = L'\0';
-		WCHAR full[MAX_PATH];
-		GetFullPathNameW(target, _countof(full), full, NULL);
+		GetFullPathNameW(target, _countof(root), root, &target);
 		HRESULT hr = S_OK;
 		if (option != never)
-			hr = BeginManifest(full);
+			hr = BeginManifest();
+		target[-1] = L'\0';
+		SetDllDirectoryW(root);
 		if (hr == S_OK)
 		{
-			LPCWSTR name = PathFindFileNameW(full);
 			if (option != never)
 			{
-				hr = ManualAddFileToManifest(name);
-				WriteTo<STD_OUTPUT_HANDLE>("[%08lX] %ls\r\n", hr, name);
+				hr = ManualAddFileToManifest(target);
+				WriteTo<STD_OUTPUT_HANDLE>("[%08lX] %ls\r\n", hr, target);
 			}
-			PathRemoveFileSpecW(full);
-			SetDllDirectoryW(full);
 			do
 			{
 				LPWSTR separator = StrChrW(folder, L';');
 				if (separator)
 					*separator = L'\0';
-				UpdateFiles(full, folder);
+				UpdateFiles(folder);
 				folder = separator ? separator + 1 : NULL;
 			} while(folder);
 			if (option != never)
@@ -575,29 +584,25 @@ class Application
 		return CLSIDFromProgID(name, &clsid);
 	}
 
-	LPCWSTR PathEatTargetFolder(LPCWSTR path) const
-	{
-		WCHAR full[MAX_PATH];
-		LPWSTR name = NULL;
-		GetFullPathNameW(target, _countof(full), full, &name);
-		name = name > full ? name - 1 : full;
-		*name = L'\0';
-		return PathEatPrefix(path, full);
-	}
-
-	HRESULT WriteValue(DWORD type, DWORD cb, const ValueBuffer &vb)
+	HRESULT WriteValue()
 	{
 		HRESULT hr = S_OK;
-		switch (type)
+		switch (vb.type)
 		{
 		case REG_SZ:
-			if (LPCWSTR name = PathEatTargetFolder(vb.s))
+			if (LPCWSTR name = PathEatPrefix(vb.s, root))
 				hr = writer.write(" = s '%%ROOT%%%ls'", name);
 			else
 				hr = writer.write(" = s '%ls'", vb.s);
 			break;
 		case REG_DWORD:
 			hr = writer.write(" = d '%lu'", vb.d);
+			break;
+		case REG_BINARY:
+			hr = writer.write(" = b '");
+			for (DWORD i = 0; i < vb.cb; ++i)
+				hr = writer.write("%02X", vb.b[i]);
+			hr = writer.write("'");
 			break;
 		}
 		return hr;
@@ -606,12 +611,9 @@ class Application
 	HRESULT WriteValue(HKEY key, LPCWSTR name)
 	{
 		HRESULT hr = S_OK;
-		DWORD type = 0;
-		ValueBuffer vb;
-		BufferCapacity<sizeof vb> cb;
-		if (0 == RegQueryValueExW(key, name, NULL, &type, vb.b, &cb))
+		if (0 == RegQueryValueExW(key, name, NULL, &vb.type, vb.b, &vb.cb))
 		{
-			hr = WriteValue(type, cb, vb);
+			hr = WriteValue();
 		}
 		return hr;
 	}
@@ -637,18 +639,15 @@ class Application
 				hr == S_FALSE ? "'%ls'" : hr == S_OK ? "ForceRemove '%ls'" : "NoRemove '%ls'");
 			RegCloseKey(key);
 		}
-		DWORD type = 0;
-		ValueBuffer vb;
-		BufferCapacity<sizeof vb> cb;
 		BufferCapacity<_countof(name)> namelen;
 		i = 0;
-		while (0 == RegEnumValueW(outerkey, i++, name, &namelen, NULL, &type, vb.b, &cb))
+		while (0 == RegEnumValueW(outerkey, i++, name, &namelen, NULL, &vb.type, vb.b, &vb.cb))
 		{
 			if (namelen == 0 || lstrcmpW(name, L"ManfredWasHere") == 0)
 				continue;
 			writer.write(depth + 1, tabs);
 			writer.write("val '%ls'", name);
-			WriteValue(type, cb, vb);
+			WriteValue();
 			writer.write("\r\n");
 		}
 		writer.write(depth, tabs);
@@ -688,7 +687,7 @@ public:
 			PathUnquoteSpacesW(p);
 			if (p == cmdline)
 			{
-				appname = PathFindFileName(p);
+				appname = PathFindFileNameW(p);
 			}
 			else if (*p != L'/')
 			{
