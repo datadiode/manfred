@@ -29,7 +29,7 @@ SOFTWARE.
 #include "miscutil.h"
 
 static const char usage[] =
-	"Manifest Resource Editor v1.02\r\n"
+	"Manifest Resource Editor v1.03\r\n"
 	"\r\n"
 	"Usage:\r\n"
 	"\r\n"
@@ -53,7 +53,7 @@ static const GUID CLSID_Registrar =
 static LPCWSTR PathEatPrefix(LPCWSTR path, LPCWSTR root)
 {
 	int prefix = PathCommonPrefixW(path, root, NULL);
-	return prefix && path[prefix] > root[prefix] ? path + prefix + 1 : NULL;
+	return root[prefix] != L'\0' ? NULL : *(path += prefix) != L'\0' ? path + 1 : path;
 }
 
 static HRESULT CoGetError(DWORD dw = GetLastError())
