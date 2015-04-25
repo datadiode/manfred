@@ -176,9 +176,12 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="manfred.cpp" />
+    <ClCompile Include="regimp.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="miscutil.h" />
+    <ClInclude Include="reader.h" />
+    <ClInclude Include="regimp.h" />
     <ClInclude Include="scoped.h" />
     <ClInclude Include="writer.h" />
     <ClInclude Include="wstdio.h" />

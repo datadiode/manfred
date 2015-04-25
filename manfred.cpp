@@ -26,6 +26,7 @@ SOFTWARE.
 #include "scoped.h"
 #include "writer.h"
 #include "wstdio.h"
+#include "regimp.h"
 #include "miscutil.h"
 
 static const char usage[] =
@@ -406,7 +407,11 @@ class Application
 	HRESULT DllRegisterServer(LPCWSTR path)
 	{
 		HRESULT hr = S_FALSE;
-		if (HMODULE module = LoadLibraryW(path))
+		if (PathMatchSpecW(path, L"*.REG"))
+		{
+			hr = ImportRegFile(path);
+		}
+		else if (HMODULE module = LoadLibraryW(path))
 		{
 			if (FARPROC pfn = GetProcAddress(module, "DllRegisterServer"))
 			{

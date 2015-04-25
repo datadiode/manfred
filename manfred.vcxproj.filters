@@ -18,6 +18,9 @@
     <ClCompile Include="manfred.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="regimp.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="scoped.h">
@@ -30,6 +33,12 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="miscutil.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="reader.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="regimp.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
