@@ -37,10 +37,11 @@ private:
 		while (n != 0)
 		{
 			const T c = *q++;
+			*p = c; // caller may want to include the token terminator
 			const BYTE b = static_cast<BYTE>(c);
 			if ((c == static_cast<T>(b) ? ctype[b] : 0) & opAnd ^ opXor)
 				return reinterpret_cast<BYTE *>(p);
-			*p++ = c;
+			++p;
 			n -= sizeof(T);
 		}
 		return NULL;
@@ -61,18 +62,19 @@ public:
 	IStream **operator&() { return &pstm; }
 
 	template<typename T>
-	ULONG readWord(T **ps, BYTE opAnd, BYTE opXor, ULONG n = 0)
+	ULONG readWord(T **ps, BYTE opAnd, BYTE opXor, ULONG n = 0, ULONG t = 0)
 	{
 		BYTE *s = reinterpret_cast<BYTE *>(*ps);
 		do
 		{
-			size_t i = n;
+			ULONG i = n;
 			n += ahead;
 			s = (BYTE *)CoTaskMemRealloc(s, n + sizeof(T));
 			BYTE *lower = s + i;
 			if (BYTE *upper = copyWord(reinterpret_cast<T *>(lower),
 				reinterpret_cast<T *>(chunk + index), opAnd, opXor, ahead))
 			{
+				upper += t; // include the token terminator if desired
 				n = static_cast<ULONG>(upper - lower);
 				index += n;
 				ahead -= n;
@@ -92,8 +94,7 @@ public:
 	template<typename T>
 	ULONG readLine(T **ps, BYTE op, ULONG n = 0)
 	{
-		n = readWord(ps, op, 0, n);
-		return readWord(ps, op, op, n);
+		return readWord(ps, op, 0, n, sizeof(T));
 	}
 
 	BYTE allocCtype(const char *q)
