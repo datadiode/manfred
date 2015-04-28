@@ -1,0 +1,5 @@
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <file name="manphred.exe">
+    <comClass clsid="{44EC053A-400F-11D0-9DCD-00A0C90391D3}" threadingModel="Both" />
+  </file>
+</assembly>
