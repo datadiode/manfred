@@ -30,7 +30,7 @@ SOFTWARE.
 #include "miscutil.h"
 
 static const char usage[] =
-	"Manifest Resource Editor v1.03\r\n"
+	"Manifest Resource Editor v1.04\r\n"
 	"\r\n"
 	"Usage:\r\n"
 	"\r\n"
@@ -595,6 +595,7 @@ class Application
 		switch (vb.type)
 		{
 		case REG_SZ:
+		case REG_EXPAND_SZ:
 			if (LPCWSTR name = PathEatPrefix(vb.s, root))
 				hr = writer.write(" = s '%%ROOT%%%ls'", name);
 			else
@@ -650,10 +651,14 @@ class Application
 		{
 			if (namelen == 0 || lstrcmpW(name, L"ManfredWasHere") == 0)
 				continue;
-			writer.write(depth + 1, tabs);
-			writer.write("val '%ls'", name);
-			WriteValue();
-			writer.write("\r\n");
+			// write only values of supported types
+			if ((1 << vb.type) & (1 << REG_SZ | 1 << REG_EXPAND_SZ | 1 << REG_DWORD | 1 << REG_BINARY))
+			{
+				writer.write(depth + 1, tabs);
+				writer.write("val '%ls'", name);
+				WriteValue();
+				writer.write("\r\n");
+			}
 		}
 		writer.write(depth, tabs);
 		writer.write("}\r\n");
