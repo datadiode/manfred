@@ -35,10 +35,32 @@ static HKEY GetRootKeyFromName(LPCWSTR name)
 	return NULL;
 }
 
-static LPWSTR EatPrefix(LPWSTR text, LPCWSTR prefix)
+static LPWSTR EatPrefix(LPWSTR text, LPCWSTR prefix, bool multi = false)
 {
-	int len = lstrlenW(prefix);
-	return StrIsIntlEqualW(FALSE, text, prefix, len) ? text + len : NULL;
+	do
+	{
+		const int len = lstrlenW(prefix);
+		if (StrIsIntlEqualW(FALSE, text, prefix, len))
+			return text + len;
+		prefix += len + multi;
+	} while (*prefix != L'\0');
+	return NULL;
+}
+
+static LPWSTR EatQuotes(LPWSTR p)
+{
+	if (*p == L'"')
+	{
+		if (int len = lstrlenW(++p))
+		{
+			if (p[--len] == L'"')
+			{
+				p[len] = L'\0';
+				return p;
+			}
+		}
+	}		
+	return NULL;
 }
 
 static LPWSTR SplitAssignment(LPWSTR line)
@@ -65,11 +87,10 @@ static LPWSTR SplitAssignment(LPWSTR line)
 		break;
 	} while (*p++ != L'\0');
 	StrTrimW(line, L" \t\r\n");
-	PathUnquoteSpacesW(line);
 	return r;
 }
 
-static HKEY ProcessLine(HKEY key, LPWSTR line)
+static HKEY ProcessLine(HKEY key, LPWSTR line, bool ansi = false)
 {
 	if (LPWSTR p = EatPrefix(line, L"["))
 	{
@@ -96,14 +117,19 @@ static HKEY ProcessLine(HKEY key, LPWSTR line)
 			p = q;
 		}
 	}
-	else if (LPWSTR val = SplitAssignment(line))
+	else if (const LPWSTR val = SplitAssignment(line))
 	{
 		SplitAssignment(val);
 		//WriteTo<STD_OUTPUT_HANDLE>("L = %ls\n", line);
 		//WriteTo<STD_OUTPUT_HANDLE>("R = %ls\n", val);
-		const LPCWSTR name = lstrcmpW(line, L"@") != 0 ? line : NULL;
-		if (LPWSTR p = EatPrefix(val, L"dword:"))
+		const LPWSTR name = lstrcmpW(line, L"@") ? EatQuotes(line) : NULL;
+		if (LPWSTR p = EatQuotes(val))
 		{
+			RegSetValueExW(key, name, 0, REG_SZ, reinterpret_cast<BYTE *>(p), (lstrlenW(p) + 1) * sizeof(WCHAR));
+		}
+		else if (LPWSTR p = EatPrefix(val, L"DWORD:"))
+		{
+			p += StrSpnW(p, L" \t\r\n");
 			*--p = L'x';
 			*--p = L'0';
 			int iVal;
@@ -112,8 +138,23 @@ static HKEY ProcessLine(HKEY key, LPWSTR line)
 				RegSetValueExW(key, name, 0, REG_DWORD, reinterpret_cast<BYTE *>(&iVal), sizeof iVal);
 			}
 		}
-		else if (LPWSTR p = EatPrefix(val, L"hex:"))
+		else if (LPWSTR p = EatPrefix(val, L"HEX:\0" L"HEX(2):\0" L"HEX(7):\0" L"HEX(B):\0", true))
 		{
+			// assertive legend on what types are being handled here
+			C_ASSERT(0x2 == REG_EXPAND_SZ);
+			C_ASSERT(0x7 == REG_MULTI_SZ);
+			C_ASSERT(0xB == REG_QWORD);
+			// default to REG_BINARY when no parenthesis exist
+			DWORD type = REG_BINARY;
+			if (LPWSTR q = StrRChrW(val, p, L'('))
+			{
+				*q = L'x';
+				*--q = L'0';
+				StrToIntExW(q, STIF_SUPPORT_HEX, reinterpret_cast<int *>(&type));
+			}
+			// disable character widening for non-string values
+			if (((1 << type) & (1 << REG_EXPAND_SZ | 1 << REG_MULTI_SZ)) == 0)
+				ansi = false;
 			DWORD cb = 0;
 			BYTE b[8200];
 			do
@@ -126,16 +167,14 @@ static HKEY ProcessLine(HKEY key, LPWSTR line)
 				if (!StrToIntExW(p, STIF_SUPPORT_HEX, &iVal))
 					break;
 				b[cb++] = static_cast<BYTE>(iVal);
+				if (ansi)
+					b[cb++] = 0;
 				p = q ? q + 1 : NULL;
 			} while (p && cb < sizeof b);
 			if (p == NULL) // everything parsed with no issues
 			{
-				RegSetValueExW(key, name, 0, REG_BINARY, b, cb);
+				RegSetValueExW(key, name, 0, type, b, cb);
 			}
-		}
-		else
-		{
-			RegSetValueExW(key, name, 0, REG_SZ, reinterpret_cast<BYTE *>(val), (lstrlenW(val) + 1) * sizeof(WCHAR));
 		}
 	}
 	return key;
@@ -190,7 +229,7 @@ HRESULT ImportRegFile(LPCWSTR path)
 			LPWSTR pwsz = NULL;
 			if (FAILED(hr = SHStrDupA(line, &pwsz)))
 				break;
-			key = ProcessLine(key, pwsz);
+			key = ProcessLine(key, pwsz, true);
 			CoTaskMemFree(pwsz);
 		}
 		CoTaskMemFree(line);

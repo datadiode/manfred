@@ -32,7 +32,7 @@ private:
 	BYTE ctype[256];
 
 	template<typename T>
-	BYTE *copyWord(T *p, const T *q, BYTE opAnd, BYTE opXor, ULONG n)
+	BYTE *sip(T *p, const T *q, BYTE opAnd, BYTE opXor, ULONG n)
 	{
 		while (n != 0)
 		{
@@ -62,7 +62,7 @@ public:
 	IStream **operator&() { return &pstm; }
 
 	template<typename T>
-	ULONG readWord(T **ps, BYTE opAnd, BYTE opXor, ULONG n = 0, ULONG t = 0)
+	ULONG slurp(T **ps, BYTE opAnd, BYTE opXor, ULONG n = 0, ULONG t = 0)
 	{
 		BYTE *s = reinterpret_cast<BYTE *>(*ps);
 		do
@@ -71,7 +71,7 @@ public:
 			n += ahead;
 			s = (BYTE *)CoTaskMemRealloc(s, n + sizeof(T));
 			BYTE *lower = s + i;
-			if (BYTE *upper = copyWord(reinterpret_cast<T *>(lower),
+			if (BYTE *upper = sip(reinterpret_cast<T *>(lower),
 				reinterpret_cast<T *>(chunk + index), opAnd, opXor, ahead))
 			{
 				upper += t; // include the token terminator if desired
@@ -94,7 +94,7 @@ public:
 	template<typename T>
 	ULONG readLine(T **ps, BYTE op, ULONG n = 0)
 	{
-		return readWord(ps, op, 0, n, sizeof(T));
+		return slurp(ps, op, 0, n, sizeof(T));
 	}
 
 	BYTE allocCtype(const char *q)
