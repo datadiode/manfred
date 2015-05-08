@@ -27,10 +27,11 @@ SOFTWARE.
 #include "writer.h"
 #include "wstdio.h"
 #include "regimp.h"
+#include "multimap.h"
 #include "miscutil.h"
 
 static const char usage[] =
-	"Manifest Resource Editor v1.04\r\n"
+	"Manifest Resource Editor v1.05\r\n"
 	"\r\n"
 	"Usage:\r\n"
 	"\r\n"
@@ -151,7 +152,7 @@ private:
 	}
 };
 
-class Application
+class Application: ZeroInit<Application>
 {
 	LPWSTR ManifestName;
 	LANGID ManifestLang;
@@ -163,6 +164,8 @@ class Application
 	LPWSTR rgs;
 	LPWSTR files;
 	UINT minus;
+	MultiMap clsmm;
+	MultiMap tlbmm;
 	Writer writer;
 	ValueBuffer vb;
 	WCHAR root[MAX_PATH];
@@ -244,7 +247,7 @@ class Application
 		}
 	}
 
-	HRESULT ExportCls()
+	HRESULT ExportCls(LPCWSTR name)
 	{
 		TCHAR subkey[MAX_PATH];
 		PathCombineW(subkey, appkey, L"Software\\Classes\\CLSID");
@@ -258,6 +261,7 @@ class Application
 		{
 			if (ManfredWasHere(hKey2, 1) == 0)
 			{
+				clsmm.Add(id, name);
 				writer.write("\t\t<comClass clsid=\"%ls\"", id);
 				WCHAR data[MAX_PATH];
 				BufferCapacity<sizeof data> cb;
@@ -296,7 +300,7 @@ class Application
 		return S_OK;
 	}
 
-	HRESULT ExportTlb()
+	HRESULT ExportTlb(LPCWSTR name)
 	{ 
 		TCHAR subkey[MAX_PATH];
 		PathCombineW(subkey, appkey, L"Software\\Classes\\TypeLib");
@@ -310,6 +314,7 @@ class Application
 		{
 			if (ManfredWasHere(hKey2, 2) == 1)
 			{
+				tlbmm.Add(id, name);
 				DWORD i = 0; 
 				WCHAR ver[40];
 				while (0 == RegEnumKeyW(hKey2, i++, ver, _countof(ver)))
@@ -433,8 +438,8 @@ class Application
 	HRESULT AddFileToManifest(LPCWSTR name)
 	{
 		writer.write("\t<file name=\"%ls\">\r\n", name);
-		ExportCls();
-		ExportTlb();
+		ExportCls(name);
+		ExportTlb(name);
 		writer.write("\t</file>\r\n");
 		return S_OK;
 	}
@@ -547,6 +552,26 @@ class Application
 		} while (p);
 	}
 
+	int ReportConflicts(const MultiMap &mm, LPCSTR format)
+	{
+		int count = 0;
+		int n = mm.GetItemCount();
+		for (int i = 0; i < n; ++i)
+		{
+			WCHAR key[MAX_PATH];
+			if (BSTR bstr = mm.GetItem(key, i))
+			{
+				if (StrChrW(bstr, mm.separator) != NULL)
+				{
+					WriteTo<STD_OUTPUT_HANDLE>(format, key, bstr);
+					++count;
+				}
+				SysFreeString(bstr);
+			}
+		}
+		return count;
+	}
+
 	HRESULT UpdateFiles()
 	{
 		LPWSTR folder = StrChrW(target, L';');
@@ -575,6 +600,14 @@ class Application
 			} while(folder);
 			if (option != never)
 				hr = EndManifest();
+
+			WriteTo<STD_OUTPUT_HANDLE>("\r\nIssues:");
+			int count = 0;
+			count += ReportConflicts(clsmm, "\r\nclsid %ls conflicts between:\r\n<%ls>");
+			count += ReportConflicts(tlbmm, "\r\ntlbid %ls conflicts between:\r\n<%ls>");
+			if (count == 0)
+				WriteTo<STD_OUTPUT_HANDLE>(" none");
+			WriteTo<STD_OUTPUT_HANDLE>("\r\n");
 		}
 		return hr;
 	}
@@ -680,11 +713,6 @@ class Application
 	}
 
 public:
-	Application()
-	{
-		SecureZeroMemory(this, sizeof *this);
-	}
-
 	HRESULT Run(const LPWSTR cmdline)
 	{
 		LPWSTR *parg = &target;

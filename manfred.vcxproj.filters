@@ -41,6 +41,9 @@
     <ClInclude Include="regimp.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="multimap.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="manfred.rc">

@@ -192,6 +192,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="miscutil.h" />
+    <ClInclude Include="multimap.h" />
     <ClInclude Include="reader.h" />
     <ClInclude Include="regimp.h" />
     <ClInclude Include="scoped.h" />

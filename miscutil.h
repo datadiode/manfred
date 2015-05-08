@@ -62,3 +62,13 @@ public:
 	operator DWORD() { return dw; }
 	DWORD *operator&() { dw = size; return &dw; }
 };
+
+template<class T>
+class ZeroInit
+{
+public:
+	ZeroInit()
+	{
+		SecureZeroMemory(static_cast<T *>(this), sizeof(T));
+	}
+};
