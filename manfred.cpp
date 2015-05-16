@@ -31,7 +31,7 @@ SOFTWARE.
 #include "miscutil.h"
 
 static const char usage[] =
-	"Manifest Resource Editor v1.05\r\n"
+	"Manifest Resource Editor v1.06\r\n"
 	"\r\n"
 	"Usage:\r\n"
 	"\r\n"
@@ -44,6 +44,7 @@ static const char usage[] =
 	"/rgs      specifies an rgs file to write results to for bulk registration\r\n"
 	"/files    specifies file inclusion patterns; may occur repeatedly\r\n"
 	"/minus    specifies file exclusion patterns; may occur only once\r\n"
+	"/vld{+|-} enables or disables Visual Leak Detector\r\n"
 	"\r\n";
 
 static const WCHAR appkey[] =
@@ -159,6 +160,7 @@ class Application: ZeroInit<Application>
 	HANDLE update;
 	LPCWSTR appname;
 	enum { always, once, never } option;
+	LPCSTR vldoption;
 	LPWSTR target;
 	LPWSTR ini;
 	LPWSTR rgs;
@@ -585,6 +587,16 @@ class Application: ZeroInit<Application>
 		SetDllDirectoryW(root);
 		if (hr == S_OK)
 		{
+			// Keep Visual Leak Detector resident throughout process lifetime
+#ifdef _WIN64
+			static const WCHAR vldlib[] = L"vld_x64";
+#else
+			static const WCHAR vldlib[] = L"vld_x86";
+#endif
+			if (HMODULE h = LoadLibraryW(vldlib))
+				if (FARPROC f = GetProcAddress(h, vldoption))
+					reinterpret_cast<void(*)()>(f)();
+
 			if (option != never)
 			{
 				hr = ManualAddFileToManifest(target);
@@ -776,6 +788,10 @@ public:
 				option = once;
 			else if (lstrcmpiW(p + 1, L"never") == 0)
 				option = never;
+			else if (lstrcmpiW(p + 1, L"vld+") == 0)
+				vldoption = "VLDEnable";
+			else if (lstrcmpiW(p + 1, L"vld-") == 0)
+				vldoption = "VLDDisable";
 			else
 				break;
 			p = q + StrSpnW(q, L" \t\r\n");
