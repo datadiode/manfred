@@ -30,8 +30,10 @@ SOFTWARE.
 #include "multimap.h"
 #include "miscutil.h"
 
+#define OUTPUT STD_ERROR_HANDLE
+
 static const char usage[] =
-	"Manifest Resource Editor v1.06\r\n"
+	"Manifest Resource Editor v1.07\r\n"
 	"\r\n"
 	"Usage:\r\n"
 	"\r\n"
@@ -167,6 +169,7 @@ class Application: ZeroInit<Application>
 	LPWSTR files;
 	UINT minus;
 	MultiMap clsmm;
+	MultiMap progmm;
 	MultiMap tlbmm;
 	Writer writer;
 	ValueBuffer vb;
@@ -256,7 +259,7 @@ class Application: ZeroInit<Application>
 		HKEY hKey;
 		if (LSTATUS r = RegCreateKeyW(HKEY_CURRENT_USER, subkey, &hKey))
 			return CoGetError(r);
-		DWORD i = 0; 
+		DWORD i = 0;
 		WCHAR id[40];
 		HKEY hKey2;
 		while (0 == RegEnumKeyW(hKey, i++, id, _countof(id)) && 0 == RegOpenKeyW(hKey, id, &hKey2))
@@ -267,6 +270,12 @@ class Application: ZeroInit<Application>
 				writer.write("\t\t<comClass clsid=\"%ls\"", id);
 				WCHAR data[MAX_PATH];
 				BufferCapacity<sizeof data> cb;
+				if (0 == SHRegGetValueW(hKey2, L"VersionIndependentProgID", NULL, SRRF_RT_REG_SZ, NULL, data, &cb) ||
+					0 == SHRegGetValueW(hKey2, L"ProgID", NULL, SRRF_RT_REG_SZ, NULL, data, &cb))
+				{
+					progmm.Add(data, name);
+					writer.write(" progid=\"%ls\"", data);
+				}
 				if (0 == SHRegGetValueW(hKey2, L"InprocServer32", L"ThreadingModel", SRRF_RT_REG_SZ, NULL, data, &cb))
 					writer.write(" threadingModel=\"%ls\"", data);
 				HKEY hKey3;
@@ -303,13 +312,13 @@ class Application: ZeroInit<Application>
 	}
 
 	HRESULT ExportTlb(LPCWSTR name)
-	{ 
+	{
 		TCHAR subkey[MAX_PATH];
 		PathCombineW(subkey, appkey, L"Software\\Classes\\TypeLib");
 		HKEY hKey;
 		if (LSTATUS r = RegCreateKeyW(HKEY_CURRENT_USER, subkey, &hKey))
 			return CoGetError(r);
-		DWORD i = 0; 
+		DWORD i = 0;
 		WCHAR id[40];
 		HKEY hKey2;
 		while (0 == RegEnumKeyW(hKey, i++, id, _countof(id)) && 0 == RegOpenKeyW(hKey, id, &hKey2))
@@ -317,7 +326,7 @@ class Application: ZeroInit<Application>
 			if (ManfredWasHere(hKey2, 2) == 1)
 			{
 				tlbmm.Add(id, name);
-				DWORD i = 0; 
+				DWORD i = 0;
 				WCHAR ver[40];
 				while (0 == RegEnumKeyW(hKey2, i++, ver, _countof(ver)))
 				{
@@ -542,7 +551,7 @@ class Application: ZeroInit<Application>
 									hr = AddFileToManifest(name);
 							}
 						}
-						WriteTo<STD_OUTPUT_HANDLE>("[%08lX] %ls\r\n", hr, name);
+						WriteTo<OUTPUT>("[%08lX] %ls\r\n", hr, name);
 					}
 				} while (FindNextFileW(h, &fd));
 				FindClose(h);
@@ -565,7 +574,7 @@ class Application: ZeroInit<Application>
 			{
 				if (StrChrW(bstr, mm.separator) != NULL)
 				{
-					WriteTo<STD_OUTPUT_HANDLE>(format, key, bstr);
+					WriteTo<OUTPUT>(format, key, bstr);
 					++count;
 				}
 				SysFreeString(bstr);
@@ -600,7 +609,7 @@ class Application: ZeroInit<Application>
 			if (option != never)
 			{
 				hr = ManualAddFileToManifest(target);
-				WriteTo<STD_OUTPUT_HANDLE>("[%08lX] %ls\r\n", hr, target);
+				WriteTo<OUTPUT>("[%08lX] %ls\r\n", hr, target);
 			}
 			do
 			{
@@ -613,13 +622,14 @@ class Application: ZeroInit<Application>
 			if (option != never)
 				hr = EndManifest();
 
-			WriteTo<STD_OUTPUT_HANDLE>("\r\nIssues:");
+			WriteTo<OUTPUT>("\r\nIssues:");
 			int count = 0;
 			count += ReportConflicts(clsmm, "\r\nclsid %ls conflicts between:\r\n<%ls>");
+			count += ReportConflicts(progmm, "\r\nprogid %ls conflicts between:\r\n<%ls>");
 			count += ReportConflicts(tlbmm, "\r\ntlbid %ls conflicts between:\r\n<%ls>");
 			if (count == 0)
-				WriteTo<STD_OUTPUT_HANDLE>(" none");
-			WriteTo<STD_OUTPUT_HANDLE>("\r\n");
+				WriteTo<OUTPUT>(" none");
+			WriteTo<OUTPUT>("\r\n");
 		}
 		return hr;
 	}
@@ -800,12 +810,31 @@ public:
 		// If no target was specified, or unconsumed arguments exist, give up.
 		if (target == NULL || *p != L'\0')
 		{
-			WriteTo<STD_OUTPUT_HANDLE>(usage, appname);
+			WriteTo<OUTPUT>(usage, appname);
 			return E_FAIL;
 		}
 
-		WriteTo<STD_OUTPUT_HANDLE>("target = %ls\r\n", target);
-		WriteTo<STD_OUTPUT_HANDLE>("files = %ls\r\n", files);
+		WriteTo<OUTPUT>("target = %ls\r\n", target);
+		WriteTo<OUTPUT>("files = %ls\r\n", files);
+
+		// Fail gracefully if not running as administrator
+		BOOL fIsRunAsAdmin = FALSE;
+		Scoped2<PSID, ePSID> pAdministratorsGroup;
+		SID_IDENTIFIER_AUTHORITY NtAuthority = SECURITY_NT_AUTHORITY;
+		if (!AllocateAndInitializeSid(&NtAuthority, 2, SECURITY_BUILTIN_DOMAIN_RID,
+			DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &pAdministratorsGroup))
+		{
+			return CoGetError();
+		}
+		if (!CheckTokenMembership(NULL, pAdministratorsGroup, &fIsRunAsAdmin))
+		{
+			return CoGetError();
+		}
+		if (!fIsRunAsAdmin)
+		{
+			WriteTo<OUTPUT>("Failing gracefully due to lack of permissions\r\n");
+			return S_OK;
+		}
 
 		Appartment appartment;
 		HRESULT hr = appartment.GetHResult();

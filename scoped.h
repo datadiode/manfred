@@ -85,6 +85,11 @@ private:
 		if (scoped != INVALID_HANDLE_VALUE)
 			FindClose(scoped);
 	}
+	template<> void Free<enum ePSID>()
+	{
+		if (scoped != NULL)
+			FreeSid(scoped);
+	}
 	template<> void Free<enum eBSTR>()
 	{
 		SysFreeString(scoped);
