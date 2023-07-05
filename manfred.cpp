@@ -33,7 +33,7 @@ SOFTWARE.
 #define OUTPUT STD_ERROR_HANDLE
 
 static const char usage[] =
-	"Manifest Resource Editor v1.07\r\n"
+	"Manifest Resource Editor v1.08\r\n"
 	"\r\n"
 	"Usage:\r\n"
 	"\r\n"
@@ -47,6 +47,9 @@ static const char usage[] =
 	"/files    specifies file inclusion patterns; may occur repeatedly\r\n"
 	"/minus    specifies file exclusion patterns; may occur only once\r\n"
 	"/vld{+|-} enables or disables Visual Leak Detector\r\n"
+	"\r\n"
+	"Passing <target> as the only argument yields a list of TypeLibIndex definitions\r\n"
+	"for use with the CComTypeInfoHolderLib template from ComTypeInfoHolderLib.h.\r\n"
 	"\r\n";
 
 static const WCHAR appkey[] =
@@ -734,6 +737,77 @@ class Application: ZeroInit<Application>
 		return S_OK;
 	}
 
+	static HRESULT WriteTypeLibIndex(LPCWSTR path)
+	{
+		ITypeLib *pTypeLib = NULL;
+		HRESULT hr = LoadTypeLib(path, &pTypeLib);
+		if (SUCCEEDED(hr))
+		{
+			Scoped2<BSTR, eBSTR> bstrLib;
+			pTypeLib->GetDocumentation(-1, &bstrLib, NULL, NULL, NULL);
+			UINT count = pTypeLib->GetTypeInfoCount();
+			for (UINT index = 0; index < count; ++index)
+			{
+				ITypeInfo *pTypeInfo = NULL;
+				if (SUCCEEDED(pTypeLib->GetTypeInfo(index, &pTypeInfo)))
+				{
+					TYPEATTR *pTypeAttr = NULL;
+					if (SUCCEEDED(pTypeInfo->GetTypeAttr(&pTypeAttr)))
+					{
+						Scoped2<BSTR, eBSTR> bstrType;
+						if (SUCCEEDED(pTypeInfo->GetDocumentation(MEMBERID_NIL, &bstrType, NULL, NULL, NULL)))
+						{
+							const char *format = NULL;
+							switch (pTypeAttr->typekind)
+							{
+							case TKIND_COCLASS:
+								format = "int const CComTypeInfoHolderLib<&CLSID_%ls, &LIBID_%ls>::TypeLibIndex = SetTypeLibIndex(%ls);\r\n";
+								break;
+							case TKIND_DISPATCH:
+								if ((pTypeAttr->wTypeFlags & TYPEFLAG_FDUAL) == 0)
+								{
+									format = "int const CComTypeInfoHolderLib<&DIID_%ls, &LIBID_%ls>::TypeLibIndex = SetTypeLibIndex(%ls);\r\n";
+									break;
+								}
+								// fall through
+							case TKIND_INTERFACE:
+								format = "int const CComTypeInfoHolderLib<&IID_%ls, &LIBID_%ls>::TypeLibIndex = SetTypeLibIndex(%ls);\r\n";
+								break;
+							}
+							if (format)
+								WriteTo<STD_OUTPUT_HANDLE>(format, *&bstrType, *&bstrLib, PathFindFileNameW(path));
+						}
+						pTypeInfo->ReleaseTypeAttr(pTypeAttr);
+					}
+					pTypeInfo->Release();
+				}
+			}
+			pTypeLib->Release();
+		}
+		return hr;
+	}
+
+	static BOOL CALLBACK EnumResNameProc(HMODULE module, LPCWSTR type, LPWSTR name, LONG_PTR param)
+	{
+		if (IS_INTRESOURCE(name))
+		{
+			WCHAR path[MAX_PATH + 8];
+			wnsprintfW(path, _countof(path), L"%s\\%d", param, reinterpret_cast<ATOM>(name));
+			WriteTypeLibIndex(path);
+		}
+		return TRUE;
+	}
+
+	HRESULT EnumTypeLibs()
+	{
+		HMODULE module = LoadLibraryEx(target, NULL, LOAD_LIBRARY_AS_DATAFILE);
+		if (module == NULL)
+			return CoGetError();
+		EnumResourceNamesW(module, L"TYPELIB", EnumResNameProc, reinterpret_cast<LONG_PTR>(target));
+		FreeLibrary(module);
+		return S_OK;
+	}
+
 public:
 	HRESULT Run(const LPWSTR cmdline)
 	{
@@ -812,6 +886,11 @@ public:
 		{
 			WriteTo<OUTPUT>(usage, appname);
 			return E_FAIL;
+		}
+
+		if (files == NULL)
+		{
+			return EnumTypeLibs();
 		}
 
 		WriteTo<OUTPUT>("target = %ls\r\n", target);
