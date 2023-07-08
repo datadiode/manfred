@@ -33,7 +33,7 @@ SOFTWARE.
 #define OUTPUT STD_ERROR_HANDLE
 
 static const char usage[] =
-	"Manifest Resource Editor v1.08\r\n"
+	"Manifest Resource Editor v1.09\r\n"
 	"\r\n"
 	"Usage:\r\n"
 	"\r\n"
@@ -46,6 +46,7 @@ static const char usage[] =
 	"/rgs      specifies an rgs file to write results to for bulk registration\r\n"
 	"/files    specifies file inclusion patterns; may occur repeatedly\r\n"
 	"/minus    specifies file exclusion patterns; may occur only once\r\n"
+	"/keep     specifies files to keep in memory once loaded; may occur only once\r\n"
 	"/vld{+|-} enables or disables Visual Leak Detector\r\n"
 	"\r\n"
 	"Passing <target> as the only argument yields a list of TypeLibIndex definitions\r\n"
@@ -88,12 +89,43 @@ static LPFNGETCLASSOBJECT GetDllGetClassObject(LPCWSTR name)
 
 STDAPI DllGetClassObject(REFCLSID rclsid, REFIID riid, LPVOID *ppv)
 {
-	if (InlineIsEqualGUID(rclsid, CLSID_Registrar))
+	// Deal with prerequisite dependencies like ATL Registrar, as per manifest
+	if (const HRSRC res = FindResourceW(NULL, MAKEINTRESOURCEW(1), RT_MANIFEST))
 	{
-		static LPFNGETCLASSOBJECT DllGetClassObject = NULL;
-		if (DllGetClassObject == NULL)
-			DllGetClassObject = GetDllGetClassObject(L"ATL");
-		return DllGetClassObject(rclsid, riid, ppv);
+		if (DWORD cb = SizeofResource(NULL, res))
+		{
+			if (const HGLOBAL global = LoadResource(NULL, res))
+			{
+				if (const char *p = static_cast<const char *>(LockResource(global)))
+				{
+					char buf[72];
+					int len = wsprintfA(buf,
+						"<comClass clsid=\"{%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}\" description=",
+						rclsid.Data1, rclsid.Data2, rclsid.Data3,
+						rclsid.Data4[0], rclsid.Data4[1], rclsid.Data4[2], rclsid.Data4[3],
+						rclsid.Data4[4], rclsid.Data4[5], rclsid.Data4[6], rclsid.Data4[7]);
+					if (const char *q = MemSearch(p, cb, buf, len))
+					{
+						if ((cb -= len) && *(q += len) == '"')
+						{
+							if (q = static_cast<const char *>(MemSearch(p = q + 1, cb - 1, q, 1)))
+							{
+								WCHAR name[MAX_PATH];
+								name[MultiByteToWideChar(CP_UTF8, 0, p, q - p, name, _countof(name))] = L'\0';
+								LPFNGETCLASSOBJECT DllGetClassObject = DllGetClassObjectFailWith<ERROR_MOD_NOT_FOUND>;
+								if (HMODULE module = GetModuleHandleW(name))
+								{
+									DllGetClassObject = DllGetClassObjectFailWith<ERROR_PROC_NOT_FOUND>;
+									if (FARPROC pfn = GetProcAddress(module, "DllGetClassObject"))
+										DllGetClassObject = reinterpret_cast<LPFNGETCLASSOBJECT>(pfn);
+								}
+								return DllGetClassObject(rclsid, riid, ppv);
+							}
+						}
+					}
+				}
+			}
+		}
 	}
 	return CLASS_E_CLASSNOTAVAILABLE;
 }
@@ -129,6 +161,7 @@ public:
 			return;
 		if (FAILED(hr = CoInitialize(NULL)))
 			return;
+		LoadLibraryW(L"ATL");
 		hr = CoCreateInstance(CLSID_Registrar, NULL, CLSCTX_ALL, IID_IUnknown, reinterpret_cast<void **>(&registrar));
 	}
 	~Appartment()
@@ -169,6 +202,7 @@ class Application: ZeroInit<Application>
 	LPWSTR target;
 	LPWSTR ini;
 	LPWSTR rgs;
+	LPWSTR keep;
 	LPWSTR files;
 	UINT minus;
 	MultiMap clsmm;
@@ -440,7 +474,10 @@ class Application: ZeroInit<Application>
 			{
 				hr = CoGetError();
 			}
-			FreeLibrary(module);
+			if (!PathMatchSpecW(PathFindFileNameW(path), keep))
+			{
+				FreeLibrary(module);
+			}
 		}
 		else
 		{
@@ -845,6 +882,11 @@ public:
 				{
 					*parg = p;
 				}
+			}
+			else if (lstrcmpiW(p + 1, L"keep") == 0)
+			{
+				sep = L';';
+				parg = &keep;
 			}
 			else if (lstrcmpiW(p + 1, L"files") == 0)
 			{
